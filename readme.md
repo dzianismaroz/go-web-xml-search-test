@@ -6,6 +6,8 @@ ok      hw4     1.008s
 
 ```
 
+[Cover report](https://html-preview.github.io/?url=https://github.com/dzianismaroz/go-web-xml-search-test/blob/master/cover.html)
+
 Homework #4
 
 Topic: XML data search and test coverage
