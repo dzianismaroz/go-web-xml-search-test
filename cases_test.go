@@ -11,8 +11,8 @@ type TestCase struct {
 	err    error
 }
 
-var cases = []TestCase{
-	//-----------------   invalid auth test cases  -------------------------
+var failCases = []TestCase{
+	// -----------------   invalid auth test cases  -------------------------
 	{
 		client: &SearchClient{AccessToken: ""},
 		err:    errors.New("Bad AccessToken"),
@@ -21,12 +21,17 @@ var cases = []TestCase{
 		client: &SearchClient{AccessToken: "$GRANTMEACCESS$"},
 		err:    errors.New("Bad AccessToken"),
 	},
-	//------------------ invalid search params --------------------------
-	// {
-	// 	client: &SearchClient{AccessToken: ValidToken},
-	// 	search: SearchRequest{},
-	// 	err:    errors.New("cant unpack result json: unexpected end of JSON input"),
-	// },
+	// simulate Internal Server Error
+	{
+		client: &SearchClient{AccessToken: internalServerErorrMarker},
+		err:    errors.New("SearchServer fatal error"),
+	},
+	// ------------------ invalid search params --------------------------
+	{
+		client: &SearchClient{AccessToken: ValidToken},
+		search: SearchRequest{OrderBy: -100},
+		err:    errors.New("unknown bad request error: invalid order_by"),
+	},
 	{
 		client: &SearchClient{AccessToken: ValidToken},
 		search: SearchRequest{Limit: -2},
@@ -42,14 +47,16 @@ var cases = []TestCase{
 		search: SearchRequest{Limit: 10, Offset: 10, OrderBy: OrderByAsc, OrderField: "Something"},
 		err:    errors.New("OrderFeld Something invalid"),
 	},
-	// ----------- testing timeout ---------
-	// {
-	// 	client: &SearchClient{AccessToken: ValidToken},
-	// 	search: SearchRequest{Limit: 10, Offset: 10, OrderBy: OrderByAsc, OrderField: "Something"},
-	// 	err:    errors.New("timeout for %s"),
-	// },
 
-	// ------ testing unpack json error ----------------
+	//-------------------- simulate unknown error on search results ------------------
+	{
+		client: &SearchClient{AccessToken: ValidToken},
+		search: SearchRequest{Limit: 30, OrderBy: OrderByAsc, OrderField: "Age", Query: replyInvalidJSON},
+		err:    errors.New("cant unpack result json: invalid character 'i' after object key"),
+	},
+}
+
+var successCases = []TestCase{
 
 	// --------- success cases ---------------------
 	{

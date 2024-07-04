@@ -1,3 +1,11 @@
+```
+solution result :
+PASS
+coverage: 100.0% of statements
+ok      hw4     1.008s
+
+```
+
 Homework #4
 
 Topic: XML data search and test coverage

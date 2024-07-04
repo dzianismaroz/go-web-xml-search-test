@@ -15,15 +15,18 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
-	AccessToken = "AccessToken"
-	ValidToken  = "583-asgl-1s4gh-789b"
-	datasetPath = "./dataset.xml"
-	ageField    = "Age"
-	idField     = "Id"
-	nameField   = "Name"
+	AccessToken               = "AccessToken"
+	ValidToken                = "583-asgl-1s4gh-789b"
+	datasetPath               = "./dataset.xml"
+	ageField                  = "Age"
+	idField                   = "Id"
+	nameField                 = "Name"
+	internalServerErorrMarker = "SIMULATE_INTERNAL_SERVER_ERROR"
+	replyInvalidJSON          = "REPLY_INVALID_JOSN"
 )
 
 var (
@@ -31,6 +34,7 @@ var (
 	BadRequestError            error  = errors.New("ErrorBadOrderField")
 	OrderByInvalidError        error  = errors.New("invalid order_by")
 	InternalServerErrorContent []byte = []byte("{\"status\": 500, \"reason\": \"Internal Server Error\"}")
+	invalidJsonResponse               = []byte("{\"some': \"invalid\", }")
 )
 
 type Users struct {
@@ -61,7 +65,7 @@ func prepareSearchData() {
 	if err != nil { // handle any problem of file read
 		panic(fmt.Sprintf("error reading dataset file [%s]: %v", datasetPath, err))
 	}
-	parseResult := Users{Members: make([]UserEntry, 0, 100), ready: true}
+	parseResult := Users{Members: make([]UserEntry, 0, 40), ready: true}
 	err = xml.Unmarshal(data, &parseResult)
 	if err != nil || len(parseResult.Members) < 1 { // check errors and parse result
 		panic(fmt.Sprintf("error parsing xml [%s]: %v", datasetPath, err))
@@ -83,6 +87,8 @@ func (e SearchErrorResponse) Msg() []byte {
 
 func authorize(r *http.Request) (reason string, isAuthorized bool) {
 	switch r.Header.Get(AccessToken) {
+	case internalServerErorrMarker:
+		panic("internal server error")
 	case ValidToken:
 		return "success", true
 	default:
@@ -172,6 +178,14 @@ func matches(user *User, searchParams *SearchRequest) bool {
 }
 
 func search(searchParams *SearchRequest, w http.ResponseWriter) {
+	if searchParams.Query == replyInvalidJSON { // siulate invalid JSON response on search result
+		w.WriteHeader(http.StatusOK)
+		n, err := w.Write(invalidJsonResponse)
+		if n != len(invalidJsonResponse) || err != nil {
+			panic("failed to process response")
+		}
+		return
+	}
 	searchCopy := make([]User, len(datasetUsers.Members)) // make a copy to keep original sequence between search requests
 	for i := 0; i < len(datasetUsers.Members); i++ {
 		searchCopy[i] = datasetUsers.Members[i].toUser()
@@ -199,8 +213,32 @@ func init() {
 	prepareSearchData() // Prepare datastore.
 }
 
-func SearchServer(w http.ResponseWriter, r *http.Request) {
+func InvalidJsonHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusBadRequest)
+	if _, err := w.Write(invalidJsonResponse); err != nil {
+		panic("error to response")
+	}
+}
 
+func TimeOutHandler(w http.ResponseWriter, r *http.Request) {
+	time.Sleep(1100 * time.Millisecond)
+	handleErrorResponse(w, http.StatusGatewayTimeout, "gateway timed out")
+}
+
+func InvalidResponseHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(invalidJsonResponse); err != nil {
+		panic("failed to process response")
+	}
+}
+
+func SearchServer(w http.ResponseWriter, r *http.Request) {
+	defer func(writer http.ResponseWriter) {
+		if r := recover(); r != nil {
+			handleErrorResponse(writer, http.StatusInternalServerError, "internal server error")
+			return
+		}
+	}(w)
 	// 1. authorize request.
 	if _, authorized := authorize(r); !authorized {
 		fmt.Println()
@@ -217,24 +255,65 @@ func SearchServer(w http.ResponseWriter, r *http.Request) {
 	search(searchParams, w)
 }
 
-func TestSearchServer(t *testing.T) {
+func TestTimeOut(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(TimeOutHandler))
+	client := SearchClient{AccessToken: ValidToken, URL: ts.URL}
+	_, err := client.FindUsers(SearchRequest{})
+	if err == nil {
+		t.Errorf("expected error, got nil")
+	}
+	if !strings.HasPrefix(err.Error(), "timeout for") {
+		t.Errorf("expected time error, got %s", err)
+	}
+}
 
+func TestJsonUnpackError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(InvalidJsonHandler))
+	client := SearchClient{AccessToken: ValidToken, URL: ts.URL}
+	_, err := client.FindUsers(SearchRequest{})
+	if err == nil {
+		t.Errorf("expected error, got nil")
+	}
+	if !strings.HasPrefix(err.Error(), "cant unpack error json") {
+		t.Errorf("expected unpack error, got %s", err)
+	}
+}
+
+func TestUnknownNetworkError(t *testing.T) {
+	client := SearchClient{AccessToken: ValidToken, URL: "http://127.0.0.1:1234"}
+	_, err := client.FindUsers(SearchRequest{})
+	if err == nil {
+		t.Errorf("expected error, got nil")
+	}
+	if !strings.HasPrefix(err.Error(), "unknown error") {
+		t.Errorf("expected time error, got %s", err)
+	}
+}
+
+func TestFailSearchServer(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(SearchServer))
+	for caseNum, item := range failCases {
+		client := item.client
+		client.URL = ts.URL
+		_, err := client.FindUsers(item.search)
+		if err == nil {
+			t.Errorf("[%d] expected error, got nil", caseNum)
+		}
+		if err.Error() != item.err.Error() { //make sence to compare exact error result with expected
+			t.Errorf("[%d] expected error [%s] doesn't match got [%s]", caseNum, item.err, err)
+		}
+	}
+	ts.Close()
+}
 
-	for caseNum, item := range cases {
+func TestSucccessSearchServer(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(SearchServer))
+	for caseNum, item := range successCases {
 		client := item.client
 		client.URL = ts.URL
 		result, err := client.FindUsers(item.search)
-		if err != nil && item.err == nil {
+		if err != nil {
 			t.Errorf("[%d] unexpected error: %#v", caseNum, err)
-		}
-		if err == nil && item.err != nil {
-			t.Errorf("[%d] expected error, got nil", caseNum)
-		}
-		if err != nil && item.err != nil { //make sence to compare exact error result with expected
-			if err.Error() != item.err.Error() {
-				t.Errorf("[%d] expected error [%s] doesn't match got [%s]", caseNum, item.err, err)
-			}
 		}
 		if !reflect.DeepEqual(item.result, result) {
 			t.Errorf("[%d] wrong result, expected %#v, got %#v", caseNum, item.result, result)
